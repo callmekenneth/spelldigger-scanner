@@ -1,0 +1,14 @@
+{
+  "name": "spelldigger-scanner",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Kortskanner för Spelldigger: identifierar Magic-kort på enheten med perceptuell hashning.",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "check": "node scripts/build.mjs --check",
+    "bench": "node test/run-bench.mjs",
+    "build-db": "node tools/build-db.mjs"
+  },
+  "devDependencies": { "sharp": "^0.33.5" }
+}
