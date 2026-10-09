@@ -12,6 +12,9 @@ Provkör: <https://callmekenneth.github.io/spelldigger-scanner/> (efter att GitH
 
 Allt körs i webbläsaren. Inga anrop till betald AI, ingen server, ingen kostnad per användare.
 
+## Gränssnitt mot Spelldigger
+Skannern identifierar, Spelldigger sparar: skannern skickar händelserna `sd:candidates` och `sd:confirm` med exakt Scryfall-version (`scryfall_id`) eller kandidater. Se [docs/integration.md](docs/integration.md).
+
 ## Kommandon
 ```
 npm install

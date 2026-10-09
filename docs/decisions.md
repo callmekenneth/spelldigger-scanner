@@ -6,3 +6,4 @@
 - **S04 Statisk webbapp (PWA-spår).** En enda HTML-fil på GitHub Pages. Kameran kräver HTTPS och fungerar inte inbäddad i andra appar.
 - **S05 Hörn styrs av matchning.** Kantdetektering ger startgissningar; slutliga hörn väljs genom att minimera avståndet till närmaste kort i databasen.
 - **S06 Eget repo tills vidare.** Flyttas in i Spelldigger som en slice när det är moget; importformatet är redan Spelldiggers (`scryfall_id,finish,quantity`).
+- **S07 Identifiera och spara hålls isär.** Skannern lämnar `scryfall_id` eller kandidater (händelserna `sd:candidates`/`sd:confirm`); Spelldigger hanterar antal, finish, skick, plats och sparande. Se `docs/integration.md`.

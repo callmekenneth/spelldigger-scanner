@@ -225,8 +225,17 @@ const SETS = /*__SETS__*/;
     const first = cands.map(c => hd(HB[top[0].i], toBits(c.bits)));
     showResult(top, SDCore.warp(photo, cands[first[0] <= first[1] ? 0 : 1].q, OW, OH), 'Matched in ' + Math.round(performance.now() - t0) + ' ms.');
   }
+  // ---- gränssnitt mot Spelldigger: skannern identifierar, Spelldigger sparar (se docs/integration.md) ----
+  const toCand = t => { const r = DB[t.i]; return { scryfall_id: r[0], name: r[1], set: r[2], collector_number: r[3], finishes: [...(r[4] || 'n')].map(f => FIN[f]), distance: t.d }; };
+  const emit = (type, detail) => { try { window.dispatchEvent(new CustomEvent(type, { detail })); } catch (e) {} };
+  function assess(top) {
+    const other = top.find(t => DB[t.i][1] !== DB[top[0].i][1]), gap = other ? other.d - top[0].d : 99, c = confidence(top[0].d, gap);
+    return { gap, cls: c[0], label: c[1], level: { good: 'confident', warn: 'check', bad: 'unsure' }[c[0]] };
+  }
+  window.SpelldiggerScanner = { contract: 1 };
   function showResult(top, warped, msg) {
     current = { top, warped }; choice = 0; qty = 1; status(msg); renderResult();
+    const a = assess(top); emit('sd:candidates', { contract: 1, confidence: a.level, distance: top[0].d, gap: a.gap, candidates: top.map(toCand) });
   }
   function confidence(d, gap) {
     if (d <= 50 && gap >= 30) return ['good', 'Confident'];
@@ -259,6 +268,7 @@ const SETS = /*__SETS__*/;
   $('qplus').addEventListener('click', () => { qty = Math.min(99, qty + 1); $('qty').textContent = qty; });
   $('add').addEventListener('click', () => {
     if (!current) return; const r = DB[current.top[choice].i], finish = $('finish').value;
+    emit('sd:confirm', { contract: 1, confidence: assess(current.top).level, candidate: toCand(current.top[choice]) });
     const ex = session.find(s => s.id === r[0] && s.finish === finish);
     if (ex) ex.qty = Math.min(99, ex.qty + qty); else session.push({ id: r[0], name: r[1], set: r[2], num: r[3], finish, qty });
     persist(); renderSession(); status('Added ' + qty + ' × ' + r[1] + '. Photograph the next card.');
