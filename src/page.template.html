@@ -99,9 +99,10 @@ footer { font-size: 12px; color: var(--muted); display: grid; gap: 4px }
   </section>
 
   <section class="panel" id="live" hidden aria-labelledby="h-live">
-    <div class="row" style="justify-content:space-between"><h2 id="h-live">Live scan</h2><span class="hint">Hold the card in view and still</span></div>
+    <div class="row" style="justify-content:space-between"><h2 id="h-live">Live scan</h2><span class="hint">Hold the card in view and still (tap the title for debug info)</span></div>
     <div class="livestage"><video id="lv" playsinline muted autoplay></video><canvas id="lvo"></canvas></div>
     <p class="livemsg" id="lvmsg" aria-live="polite">Starting camera…</p>
+    <p class="hint" id="lvdbg" hidden style="font-family:var(--mono);font-size:12px"></p>
     <div class="row"><button class="primary grow" id="lvnow" type="button">Capture now</button><button id="lvstop" type="button">Stop</button></div>
   </section>
 
@@ -307,7 +308,8 @@ const DBINFO = /*__DBINFO__*/;
   // ---- live scan: camera preview, auto-capture when the whole card is in view, still and sharp ----
   const lv = $('lv'), lvo = $('lvo'), grab = document.createElement('canvas'), gctx = grab.getContext('2d', { willReadFrequently: true });
   let stream = null, liveOn = false, liveBusy = false, needClear = false, lastFire = null, lastSeen = null, waitedSince = 0;
-  const tracker = SDLive.makeTracker({ frames: 4, moveTol: 0.015, sharpFloor: 700 });
+  const tracker = SDLive.makeTracker();
+  let prevThumb = null, dbg = false;
   const liveMsg = (t, ok) => { const m = $('lvmsg'); m.textContent = t; m.className = 'livemsg' + (ok ? ' ok' : ''); };
   const dist2 = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
   async function startLive() {
@@ -332,25 +334,29 @@ const DBINFO = /*__DBINFO__*/;
   function overlay(img, q, state) {
     lvo.width = img.width; lvo.height = img.height; const c = lvo.getContext('2d'); c.clearRect(0, 0, lvo.width, lvo.height);
     if (!q) return; c.lineWidth = Math.max(2, img.width / 90); c.lineJoin = 'round';
-    c.strokeStyle = state === 'fire' ? '#3fbf93' : state === 'ok' ? '#c9a84c' : 'rgba(255,255,255,0.6)'; if (state === 'bad') c.setLineDash([8, 8]);
+    c.strokeStyle = state === 'fire' ? '#3fbf93' : state === 'focus' ? '#c9a84c' : 'rgba(255,255,255,0.75)'; if (state === 'bad') c.setLineDash([8, 8]);
     c.beginPath(); q.forEach((p, i) => i ? c.lineTo(p[0], p[1]) : c.moveTo(p[0], p[1])); c.closePath(); c.stroke();
   }
+  // Varje varv: hämta bild, mät stillhet (hela bilden), hitta kortet, mät skärpa och låt tracker besluta. Konturen som visas är utjämnad.
   function loop() {
     if (!liveOn) return;
-    if ($('live').hidden || liveBusy) { setTimeout(loop, 300); return; }
-    const t0 = performance.now(), img = frame(320);
+    if ($('live').hidden || liveBusy) { prevThumb = null; setTimeout(loop, 300); return; }
+    const t0 = performance.now(), img = frame(480);
     if (!img) { setTimeout(loop, 200); return; }
-    const q = SDCore.detect(img, true), res = SDLive.analyse(img, q);
+    const sm = SDCore.shrink(img, 320), th = SDLive.thumb(img), mo = SDLive.motion(prevThumb, th); prevThumb = th;
+    const q0 = SDCore.detect(sm.img, true), q = q0 && q0.map(p => [p[0] / sm.k, p[1] / sm.k]);
+    const geo = SDLive.geometry(img, q), sh = geo.ok ? SDLive.sharpness(img, q, SDCore.warp) : { ratio: 0, energy: 0 };
     // Ett kort som redan skannats måste lämna bilden (eller flyttas) innan nästa automatiska fångst.
-    if (needClear && (!res.ok || (lastFire && dist2(q[0], lastFire[0]) / Math.hypot(img.width, img.height) > 0.08))) needClear = false;
-    lastSeen = res.ok ? q.map(p => p.slice()) : null;
-    const t = needClear ? { fire: false, progress: 0 } : tracker.push(res, img.width, img.height);
+    if (needClear && (!geo.ok || (lastFire && dist2(q[0], lastFire[0]) / Math.hypot(img.width, img.height) > 0.08))) { needClear = false; tracker.reset(); }
+    const r = needClear ? { fire: false, quad: null, stage: 'search' } : tracker.push({ geo, quad: q, sharp: sh, motion: mo }, img.width, img.height);
+    lastSeen = geo.ok ? (r.quad || q).map(p => p.slice()) : null;
     if (needClear) { overlay(img, null); liveMsg('Card scanned. Show the next one…'); }
-    else if (!res.ok) { overlay(img, q, 'bad'); liveMsg(res.why); }
-    else if (t.fire) { overlay(img, q, 'fire'); liveMsg('Got it!', true); lastFire = q.map(p => p.slice()); capture(); }
-    else { overlay(img, q, 'ok'); liveMsg(t.progress >= 0.9 ? 'Focusing…' : 'Hold still…'); }
-    if (!t.fire && !needClear && res.ok && performance.now() - waitedSince > 9000) liveMsg('Taking a while? Press "Capture now".');
-    setTimeout(loop, Math.max(30, 180 - (performance.now() - t0)));
+    else if (!geo.ok) { overlay(img, q, 'bad'); liveMsg(geo.why); }
+    else if (r.fire) { overlay(img, r.quad, 'fire'); liveMsg('Got it!', true); lastFire = r.quad.map(p => p.slice()); capture(); }
+    else { overlay(img, r.quad, r.stage); liveMsg(r.why); }
+    if (!r.fire && !needClear && geo.ok && performance.now() - waitedSince > 9000) liveMsg('Taking a while? Press "Capture now".');
+    if (dbg) { const st = r.stats || {}; $('lvdbg').textContent = 'still ' + (isFinite(mo) ? mo.toFixed(2) : '-') + ' (<0.8) · spread ' + (st.spread != null ? (st.spread * 100).toFixed(1) + '%' : '-') + ' (<3%) · sharp ' + sh.ratio.toFixed(2) + ' (≥0.30) · energy ' + Math.round(sh.energy) + ' · geo ' + (geo.ok ? 'ok' : geo.why) + ' · ' + Math.round(performance.now() - t0) + ' ms/frame · video ' + lv.videoWidth + '×' + lv.videoHeight; }
+    setTimeout(loop, Math.max(30, 120 - (performance.now() - t0)));
   }
   function capture() {
     if (liveBusy) return; liveBusy = true; needClear = true;
@@ -358,6 +364,7 @@ const DBINFO = /*__DBINFO__*/;
     const img = frame(1600); if (!img) { liveBusy = false; return; }
     showLive(false); $('backlive').hidden = false; usePhoto(img, 'live');
   }
+  $('h-live').addEventListener('click', () => { dbg = !dbg; $('lvdbg').hidden = !dbg; });
   $('livebtn').addEventListener('click', startLive);
   $('lvstop').addEventListener('click', stopLive);
   $('lvnow').addEventListener('click', () => { lastFire = lastSeen; capture(); });
