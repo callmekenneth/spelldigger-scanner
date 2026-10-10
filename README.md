@@ -8,7 +8,8 @@ Provkör: <https://callmekenneth.github.io/spelldigger-scanner/> (efter att GitH
 1. **Hörn:** kortets fyra hörn hittas (färg/kantdetektering + robust rektangelpassning) och förfinas genom att flytta hörnen tills träffen mot databasen blir så nära som möjligt.
 2. **Avtryck:** kortet rätas ut till 146×204 px och får ett perceptuellt avtryck (pHash + dHash över hela kortet och över bildrutan, 256 bitar).
 3. **Match:** minsta Hamming-avstånd mot `data/db.json`. Avstånd och marginal till näst bästa *andra* kort styr indikatorn Confident / Check it / Unsure.
-4. **Live scan:** kameraflödet analyseras ~5 gånger/s. Bilden tas automatiskt när kortet ligger helt i bild, har legat stilla och är skarpt. Kräver HTTPS (därför GitHub Pages).
+4. **Batch scan (hands-free):** mobilen fast över en matarlåda; säkra kort läggs till automatiskt, osäkra köas under "To check". Se `docs/live-scan.md`.
+5. **Live scan:** kameraflödet analyseras ~5 gånger/s. Bilden tas automatiskt när kortet ligger helt i bild, har legat stilla och är skarpt. Kräver HTTPS (därför GitHub Pages).
 
 Allt körs i webbläsaren. Inga anrop till betald AI, ingen server, ingen kostnad per användare.
 

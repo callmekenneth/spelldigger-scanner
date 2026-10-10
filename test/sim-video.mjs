@@ -1,5 +1,6 @@
 // Gör en simulerad "live"-film (MJPEG) av ett kortfoto för test av live-läget utan riktig kamera.
 //   node test/sim-video.mjs bench/IMG_5786.jpg /tmp/hold.mjpeg [--defocus | --sway]
+//   node test/sim-video.mjs a.jpg,b.jpg,a.jpg /tmp/batch.mjpeg     (flera kort efter varandra, som i en matarlåda)
 // OBS: 4:2:0 (yuvj420p) krävs, annars avkodar Chromiums falska kamera ingenting (grön bild).
 // Normal: tomt bord -> kortet glider in -> hålls stilla med handdarr -> glider ut -> tomt. --defocus: oskarp hållning.
 // --sway: kortet svajar hela tiden och blir aldrig stilla. Kräver ffmpeg i PATH.
@@ -39,13 +40,17 @@ export function sequence(mode) {
 }
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const [src, dst] = process.argv.slice(2), mode = process.argv.includes('--defocus') ? 'defocus' : process.argv.includes('--sway') ? 'sway' : 'hold';
-  const W = 360, H = 640, { data, info } = await sharp(src).resize(Math.round(W * 0.7 * 2), null).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
-  const card = { width: info.width, height: info.height, data };
+  const W = 360, H = 640, cards = [];
+  for (const f of src.split(',')) { const { data, info } = await sharp(f).resize(Math.round(W * 0.7 * 2), null).ensureAlpha().raw().toBuffer({ resolveWithObject: true }); cards.push({ width: info.width, height: info.height, data }); }
   const ff = spawn('ffmpeg', ['-y', '-loglevel', 'error', '-f', 'image2pipe', '-framerate', '15', '-c:v', 'ppm', '-i', '-', '-c:v', 'mjpeg', '-pix_fmt', 'yuvj420p', '-q:v', '3', dst], { stdio: ['pipe', 'inherit', 'inherit'] });
-  for (const s of sequence(mode)) {
+  for (const card of cards) for (const s of sequence(mode)) {
     const img = blur(render(card, W, H, s.o), s.blur), ppm = Buffer.alloc(W * H * 3);
     for (let p = 0; p < W * H; p++) { ppm[p * 3] = img.data[p * 4]; ppm[p * 3 + 1] = img.data[p * 4 + 1]; ppm[p * 3 + 2] = img.data[p * 4 + 2]; }
     ff.stdin.write(Buffer.concat([Buffer.from(`P6\n${W} ${H}\n255\n`), ppm]));
   }
+  const tail = process.argv.find(a => a.startsWith('--tail=')); // tom bild sist så att filmen inte börjar om medan det sista kortet identifieras
+  if (tail) { const img = render(cards[0], W, H, { show: false, s: 0.7, dx: 0, dy: 0, rot: 0, bright: 1, noise: 4 }), ppm = Buffer.alloc(W * H * 3);
+    for (let p = 0; p < W * H; p++) { ppm[p * 3] = img.data[p * 4]; ppm[p * 3 + 1] = img.data[p * 4 + 1]; ppm[p * 3 + 2] = img.data[p * 4 + 2]; }
+    const fr = Buffer.concat([Buffer.from(`P6\n${W} ${H}\n255\n`), ppm]); for (let i = 0; i < +tail.slice(7); i++) ff.stdin.write(fr); }
   ff.stdin.end(); await new Promise(r => ff.on('close', r)); console.log('Skrev', dst, '(' + mode + ')');
 }

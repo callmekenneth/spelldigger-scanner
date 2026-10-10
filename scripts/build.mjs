@@ -11,8 +11,8 @@ const strip = (s, name) => s.replace(`if (typeof module !== 'undefined') module.
 const mi = readManifestInputs(), manifest = makeManifest(mi.dbText, mi.sets);
 if (fs.readFileSync(mi.file, 'utf8') !== JSON.stringify(manifest, null, 2) + '\n') { console.error('data/manifest.json är inaktuell. Kör: node scripts/manifest.mjs'); process.exit(1); }
 let html = read('src/page.template.html');
-html = html.replace('/*__SDH__*/', () => read('src/hash.js'))
-  .replace('/*__CORE__*/', () => strip(read('src/core.js'), 'SDCore'))
+html = html.replaceAll('/*__SDH__*/', () => read('src/hash.js'))
+  .replaceAll('/*__CORE__*/', () => strip(read('src/core.js'), 'SDCore'))
   .replace('/*__LIVE__*/', () => strip(read('src/live.js'), 'SDLive'))
   .replace('/*__DB__*/', () => read('data/db.json').trim())
   .replace('/*__DBINFO__*/', () => JSON.stringify(manifest))

@@ -24,7 +24,7 @@ Tre `CustomEvent` skickas på `window`. `detail` är ren JSON. `window.Spelldigg
 }
 ```
 - `candidates`: sorterade, bäst först, högst 6. Samma kort kan förekomma i flera tryckningar.
-- `source`: `live` (auto- eller manuell fångst i live-läget) eller `photo` (foto/vald bild).
+- `source`: `live` (auto- eller manuell fångst i live-läget), `photo` (foto/vald bild) eller `batch` (hands-free-läget, se avsnitt 4).
 - `name`, `set`, `collector_number` och `finishes` är **visningshjälp**. `finishes` är de finish tryckningen finns i, **inte** vilken finish det skannade exemplaret har.
 
 ### `sd:confirm`: användaren bekräftade en kortversion
@@ -36,13 +36,21 @@ Tre `CustomEvent` skickas på `window`. `detail` är ren JSON. `window.Spelldigg
   "match": { "…": "som i sd:candidates" },
   "candidate": { "scryfall_id": "…", "…": "…" },
   "selected_rank": 1,
-  "changed_by_user": true
+  "changed_by_user": true,
+  "auto_confirmed": false
 }
 ```
+`auto_confirmed` (nytt) är `true` när skannern själv bekräftade utan att användaren sett kortet (bara `source: "batch"`, bara `confidence: "confident"`). Annars `false`.
 Händelsen överlämnar vald kortversion till Spelldiggers tilläggsflöde. Den är **inte** ett sparkommando. Spelldigger frågar efter antal, finish, skick och plats och ber användaren bekräfta sparandet.
 - `revision` är samma som i den senaste `sd:candidates` för skanningen.
 - `confidence` och `match` är kopierade från den `sd:candidates` användaren valde ur och **ändras aldrig av användarens val**. `selected_rank` (0 = bäst) och `changed_by_user` visar om användaren valde något annat än förstaförslaget.
 - Skannern skickar aldrig antal, finish, skick eller plats.
+
+### `sd:retract`: användaren ångrade en automatisk tillägg (nytt, bara batch)
+```json
+{ "contract": 2, "scan_id": "9b1f0c6e-…" }
+```
+Skickas när användaren trycker "Undo last" på ett kort som batch-läget redan bekräftat automatiskt. Spelldigger ska ta bort det som skapades av den `sd:confirm` som hade samma `scan_id`. Skickas aldrig för `live` eller `photo`. Förslag till Codex att granska; additivt, så kontrakt 2 är i övrigt oförändrat.
 
 ### `sd:cancel`: skanningen är avbruten
 ```json
@@ -107,3 +115,13 @@ Antal, finish-val, plats, sessionslistan och CSV-export i `src/page.template.htm
 1. Kopiera `src/hash.js`, `src/core.js`, `src/live.js` som en modul; ersätt demo-UI:t med Spelldiggers komponenter och koppla `sd:confirm` till tilläggsflödet.
 2. Hasherna byggs i den nattliga Scryfall-synken och serveras som versionerad statisk fil enligt [data-format.md](data-format.md).
 3. Matchningen körs i en Web Worker.
+
+## 4. Batch-läget (hands-free)
+Telefonen står fast över en matarlåda och användaren matar kort efter kort. Skannern fångar varje kort själv (samma stillhets- och skärpespärr som live-läget, se `docs/live-scan.md`) och identifieringen körs i en bakgrundstråd så att nästa kort hinner fångas medan det förra identifieras.
+
+- Varje fångat kort får eget `scan_id` och `sd:candidates` med `source: "batch"`.
+- **`confident`:** skannern skickar direkt `sd:confirm` med `auto_confirmed: true`, `selected_rank: 0`, `changed_by_user: false`. Finish sätts till `nonfoil` om tryckningen finns i den, annars första finish. Skannern kan inte se om kortet är foil.
+- **`check` och `unsure`:** inget `sd:confirm`. Kortet läggs i skannerns lista "To check". Användaren väljer kandidat (då skickas `sd:confirm` med `auto_confirmed: false`, `changed_by_user` om valet inte var förstaförslaget) eller hoppar över (`sd:cancel`, `reason: "skipped"`). Efter omladdning av sidan skapas scan-objektet först vid beslutet, och `sd:candidates` skickas då omedelbart före `sd:confirm`/`sd:cancel`.
+- **`match.printing: "ambiguous"` vid `confident`:** kortet är rätt men tryckningen kan vara fel. Skannern lägger till automatiskt men märker raden "check printing". Spelldigger ska **inte** behandla sådana automatiska tillägg som slutgiltiga utan låta användaren granska tryckningen efteråt (avsnitt 3 gäller fortfarande: aldrig tyst).
+- "Undo last" skickar `sd:retract` (se ovan).
+- Samma kort två gånger i rad räknas som två skanningar. Ett kort måste lämna bilden (två bilder i rad utan kort) eller flyttas innan nästa fångst.

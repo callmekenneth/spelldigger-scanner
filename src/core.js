@@ -126,28 +126,30 @@ const SDCore = (() => {
     return [best, bi];
   }
   function allDistances(flat, bits) { const n = flat.length / 8, out = new Uint16Array(n); for (let i = 0; i < n; i++) { const o = i * 8; let s = 0; for (let k = 0; k < 8; k++) s += pop((flat[o + k] ^ bits[k]) >>> 0); out[i] = s; } return out; }
-  const scoreQ = (img, flat, q) => { const bits = toBits(SDH.hash(warp(img, q, MW, MH))); return nearest(flat, bits)[0]; };
+  const scoreQ = (img, flat, q, coarse) => { const bits = toBits(SDH.hash(coarse ? warp(img, q, MW >> 1, MH >> 1) : warp(img, q, MW, MH))); return nearest(flat, bits)[0]; };
 
   // ---- identify: score start quads, then move corners while the best database match improves ----
-  function identify(photo, flat, starts0) {
+  // opts (valfritt): { top: antal startkandidater att förfina, steps: stegstorlekar, rounds: max varv per steg, coarse: sök hörn på halv upplösning (ca 2x snabbare; slutlig poäng alltid i full upplösning) }.
+  function identify(photo, flat, starts0, opts) {
+    const O = Object.assign({ coarse: false, top: 2, steps: [0.05, 0.025, 0.012], rounds: 4 }, opts || {});
     const sh = shrink(photo, 640), img = sh.img, k = sh.k, starts = starts0.map(q => q.map(p => [p[0] * k, p[1] * k]));
     let cands = [];
-    for (const s of starts) for (const q of orientations(s)) cands.push({ q, d: scoreQ(img, flat, q) });
+    for (const s of starts) for (const q of orientations(s)) cands.push({ q, d: scoreQ(img, flat, q, O.coarse) });
     cands.sort((a, b) => a.d - b.d);
     let best = null, evals = cands.length;
-    for (const c of cands.slice(0, 2)) {
+    for (const c of cands.slice(0, O.top)) {
       let q = c.q.map(p => p.slice()), cur = c.d;
       const cw = len(q[0], q[1]);
-      for (const step of [0.05, 0.025, 0.012]) {
+      for (const step of O.steps) {
         const s = step * cw;
-        for (let round = 0, improved = true; improved && round < 4; round++) {
+        for (let round = 0, improved = true; improved && round < O.rounds; round++) {
           improved = false;
           const moves = [];
           for (let k = 0; k < 4; k++) for (const [dx, dy] of [[s, 0], [-s, 0], [0, s], [0, -s]]) { const m = q.map(p => p.slice()); m[k][0] += dx; m[k][1] += dy; moves.push(m); }
           const cx = (q[0][0] + q[1][0] + q[2][0] + q[3][0]) / 4, cy = (q[0][1] + q[1][1] + q[2][1] + q[3][1]) / 4;
           for (const f of [1 + step, 1 - step]) moves.push(q.map(p => [cx + (p[0] - cx) * f, cy + (p[1] - cy) * f]));
           for (const [dx, dy] of [[s, 0], [-s, 0], [0, s], [0, -s]]) moves.push(q.map(p => [p[0] + dx, p[1] + dy]));
-          for (const m of moves) { const d = scoreQ(img, flat, m); evals++; if (d < cur) { cur = d; q = m; improved = true; } }
+          for (const m of moves) { const d = scoreQ(img, flat, m, O.coarse); evals++; if (d < cur) { cur = d; q = m; improved = true; } }
         }
       }
       if (!best || cur < best.d) best = { q, d: cur };
@@ -155,6 +157,16 @@ const SDCore = (() => {
     const bits = toBits(SDH.hash(warp(img, best.q, MW, MH)));
     return { quad: best.q.map(p => [p[0] / k, p[1] / k]), dists: allDistances(flat, bits), evals };
   }
-  return { detect, framePrior, shrink, warp, orientations, makeIndex, identify, MW, MH };
+  // Batch-läget: snabbt försök först (grov sökning, en kandidat, ca 0,5 s), grundlig sökning bara om kortet inte blev tydligt.
+  const minOf = d => { let b = 65535; for (let i = 0; i < d.length; i++) if (d[i] < b) b = d[i]; return b; };
+  function identifyBatch(img, flat, start) {
+    let res = identify(img, flat, [start, detect(img, true)].filter(Boolean), { coarse: true, top: 1 });
+    if (minOf(res.dists) > 45) {
+      const r2 = identify(img, flat, [start, detect(img), detect(img, true), framePrior(img, 0.9), framePrior(img, 0.8)].filter(Boolean));
+      if (minOf(r2.dists) < minOf(res.dists)) res = r2;
+    }
+    return res;
+  }
+  return { detect, framePrior, shrink, warp, orientations, makeIndex, identify, identifyBatch, MW, MH };
 })();
 if (typeof module !== 'undefined') module.exports = SDCore;

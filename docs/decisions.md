@@ -10,3 +10,5 @@
 - **S08 "Samma kort" = Oracle-ID.** Marginalen (`gap`) och all jämförelse mellan kort bygger på `oracle_id`, inte namn. Säkerhetsnivån avser kortet; tryckningens säkerhet anges separat (`match.printing`).
 - **S09 En skanning = ett `scan_id`.** Nytt ID vid varje avsiktlig ny skanning, en `sd:confirm` per ID, sena resultat kastas, avbrott ger `sd:cancel`. Kvarhållna kort skannas inte om.
 - **S10 Innehållsbaserad dataversion.** `db.version` = `sdh1-` + SHA-256-prefix av `db.json`; skickas i varje händelse. Bygget avbryts om manifestet är inaktuellt.
+- **S11 Batch scan bekräftar bara `confident` automatiskt.** Allt annat köas i "To check". Hellre en extra granskning än ett fel kort i samlingen. Automatiska tillägg är ångringsbara (`sd:retract`).
+- **S12 Identifiering i Web Worker i batch-läget.** Identifieringen tar sekunder på en dator och blockerade kameran, så matade kort missades. Workern får samma kod som sidan (`hash.js` + `core.js`).

@@ -75,6 +75,13 @@ button:disabled { opacity: 0.5; cursor: default }
 .session .q { font-variant-numeric: tabular-nums; font-weight: 700 }
 .session button { min-height: 36px; padding: 4px 10px; font-size: 13px }
 .foil { color: var(--gold-ink); font-weight: 700 }
+.rvlist { list-style: none; margin: 0; padding: 0; display: grid; gap: 14px }
+.rvlist li { display: grid; grid-template-columns: 84px 1fr; gap: 12px; border-top: 1px solid var(--line); padding-top: 12px }
+.rvlist li:first-child { border-top: 0; padding-top: 0 }
+.rvlist img { width: 84px; height: auto; border-radius: 5px; border: 1px solid var(--line) }
+.rvlist .opts { display: grid; gap: 6px; min-width: 0 }
+.rvlist .opts button { justify-content: space-between; min-height: 44px; text-align: left; font-weight: 500 }
+.bflash-good { outline: 3px solid var(--good); outline-offset: -3px } .bflash-warn { outline: 3px solid var(--warn); outline-offset: -3px }
 textarea { font-family: var(--mono); font-size: 12.5px; width: 100%; min-height: 120px; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 10px; resize: vertical; }
 .empty { color: var(--muted); font-size: 14px; margin: 0 }
 .status { font-size: 13px; color: var(--muted); min-height: 1.5em; margin: 0 }
@@ -92,6 +99,7 @@ footer { font-size: 12px; color: var(--muted); display: grid; gap: 4px }
     </div>
     <div class="capture">
       <button class="primary" id="livebtn" type="button">Live scan (auto-capture)</button>
+      <button id="batchbtn" type="button">Batch scan (hands-free)</button>
       <label class="btn" for="cam">Photograph a card<input type="file" id="cam" accept="image/*" capture="environment"></label>
       <label class="btn" for="pick">Choose photo<input type="file" id="pick" accept="image/*"></label>
     </div>
@@ -103,8 +111,19 @@ footer { font-size: 12px; color: var(--muted); display: grid; gap: 4px }
     <div class="row" style="justify-content:space-between"><h2 id="h-live">Live scan</h2><span class="hint">Hold the card in view and still (tap the title for debug info)</span></div>
     <div class="livestage"><video id="lv" playsinline muted autoplay></video><canvas id="lvo"></canvas></div>
     <p class="livemsg" id="lvmsg" aria-live="polite">Starting camera…</p>
+    <div id="bstat" hidden style="display:grid;gap:10px">
+      <div class="row" style="justify-content:space-between"><span class="meta" id="bcount"></span><label class="hint"><input type="checkbox" id="bsound" checked> Sound</label></div>
+      <div class="match" id="blast" hidden><canvas id="blastc" width="146" height="204" aria-label="Last scanned card"></canvas>
+        <div style="display:grid;gap:6px;min-width:0"><p class="name" id="bl-name"></p><div class="meta" id="bl-meta"></div><div class="row"><span class="chip good" id="bl-chip"></span><button id="bundo" type="button">Undo last</button></div></div></div>
+    </div>
     <p class="hint" id="lvdbg" hidden style="font-family:var(--mono);font-size:12px"></p>
-    <div class="row"><button class="primary grow" id="lvnow" type="button">Capture now</button><button id="lvstop" type="button">Stop</button></div>
+    <div class="row"><button class="primary grow" id="lvnow" type="button">Capture now</button><button id="bpause" type="button" hidden>Pause</button><button id="lvstop" type="button">Stop</button></div>
+  </section>
+
+  <section class="panel" id="review" hidden aria-labelledby="h-rv">
+    <div class="row" style="justify-content:space-between"><h2 id="h-rv">To check</h2><span class="meta" id="rv-count"></span></div>
+    <p class="hint">Cards the scanner was not sure about. Pick the right one, or skip it.</p>
+    <ul class="rvlist" id="rvlist"></ul>
   </section>
 
   <section class="panel" id="adjust" hidden aria-labelledby="h-adj">
@@ -155,6 +174,20 @@ footer { font-size: 12px; color: var(--muted); display: grid; gap: 4px }
   </footer>
 </main>
 
+<script type="text/plain" id="wsrc">
+/*__SDH__*/
+/*__CORE__*/
+// Bakgrundstråd för batch-läget: identifierar kort utan att blockera kameran.
+let FLAT = null;
+onmessage = e => {
+  const m = e.data;
+  if (m.type === 'init') { FLAT = SDCore.makeIndex(m.db); postMessage({ type: 'ready' }); return; }
+  try {
+    const res = SDCore.identifyBatch({ width: m.w, height: m.h, data: new Uint8ClampedArray(m.buf) }, FLAT, m.start);
+    postMessage({ type: 'done', id: m.id, quad: res.quad, dists: res.dists });
+  } catch (err) { postMessage({ type: 'done', id: m.id, error: String(err) }); }
+};
+</script>
 <script>
 /*__SDH__*/
 /*__CORE__*/
@@ -308,12 +341,14 @@ const DBINFO = /*__DBINFO__*/;
 
   // ---- live scan: camera preview, auto-capture when the whole card is in view, still and sharp ----
   const lv = $('lv'), lvo = $('lvo'), grab = document.createElement('canvas'), gctx = grab.getContext('2d', { willReadFrequently: true });
-  let stream = null, liveOn = false, liveBusy = false, needClear = false, lastFire = null, lastSeen = null, waitedSince = 0;
+  let paused = false, bGone = 0, batchMsg = '', lastDims = 480, stream = null, liveOn = false, liveBusy = false, needClear = false, lastFire = null, lastSeen = null, waitedSince = 0;
   const tracker = SDLive.makeTracker();
   let prevThumb = null, dbg = false;
   const liveMsg = (t, ok) => { const m = $('lvmsg'); m.textContent = t; m.className = 'livemsg' + (ok ? ' ok' : ''); };
   const dist2 = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
-  async function startLive() {
+  let mode = 'live';
+  async function startLive(m) {
+    mode = m === 'batch' ? 'batch' : 'live'; endScan('new_scan'); audioInit();
     const cm = $('capmsg'); cm.hidden = true;
     const fail = t => { cm.textContent = t; cm.hidden = false; status(t); };
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { fail('Live camera is not available here (the page must be opened over HTTPS in its own tab). Use "Photograph a card" instead.'); return; }
@@ -322,10 +357,12 @@ const DBINFO = /*__DBINFO__*/;
     } catch (e) { stream = null; fail('Live camera is blocked in this view (' + (e && e.name || 'error') + '). It usually works only when the scanner is opened as its own web page, not embedded inside another app. Use "Photograph a card" for now.'); return; }
     lv.srcObject = stream; try { await lv.play(); } catch (e) {}
     $('result').hidden = true; $('adjust').hidden = true; current = null; showLive(true);
-    liveOn = true; liveBusy = false; needClear = false; lastFire = null; waitedSince = performance.now(); tracker.reset(); liveMsg('Show a card to the camera…'); loop();
+    const b = mode === 'batch'; $('bstat').hidden = !b; $('bpause').hidden = !b; $('h-live').textContent = b ? 'Batch scan' : 'Live scan'; paused = false; $('bpause').textContent = 'Pause'; bGone = 0; batchMsg = '';
+    if (b) { $('blast').hidden = true; initWorker(); renderBatchCount(); wakeLock(true); }
+    liveOn = true; liveBusy = false; needClear = false; lastFire = null; waitedSince = performance.now(); tracker.reset(); liveMsg(b ? 'Ready: feed the first card' : 'Show a card to the camera…'); loop();
   }
   function showLive(on) { $('live').hidden = !on; }
-  function stopLive() { endScan('stopped'); liveOn = false; if (stream) stream.getTracks().forEach(t => t.stop()); stream = null; lv.srcObject = null; showLive(false); $('backlive').hidden = true; }
+  function stopLive() { endScan('stopped'); liveOn = false; if (stream) stream.getTracks().forEach(t => t.stop()); stream = null; lv.srcObject = null; showLive(false); $('backlive').hidden = true; wakeLock(false); if (mode === 'batch' && (batchStats.added || batchStats.check)) status('Batch finished: ' + batchStats.added + ' added' + (queue.length ? ', ' + queue.length + ' to check below.' : '.')); }
   function resumeLive() { if (!stream) return; endScan('resumed'); $('result').hidden = true; $('adjust').hidden = true; current = null; showLive(true); tracker.reset(); waitedSince = performance.now(); liveBusy = false; liveMsg('Show the next card…'); }
   function frame(maxSide) {
     const vw = lv.videoWidth, vh = lv.videoHeight; if (!vw || !vh) return null;
@@ -341,21 +378,23 @@ const DBINFO = /*__DBINFO__*/;
   // Varje varv: hämta bild, mät stillhet (hela bilden), hitta kortet, mät skärpa och låt tracker besluta. Konturen som visas är utjämnad.
   function loop() {
     if (!liveOn) return;
-    if ($('live').hidden || liveBusy) { prevThumb = null; setTimeout(loop, 300); return; }
+    if ($('live').hidden || liveBusy || paused) { prevThumb = null; if (paused) liveMsg('Paused'); setTimeout(loop, 300); return; }
     const t0 = performance.now(), img = frame(480);
     if (!img) { setTimeout(loop, 200); return; }
     const sm = SDCore.shrink(img, 320), th = SDLive.thumb(img), mo = SDLive.motion(prevThumb, th); prevThumb = th;
     const q0 = SDCore.detect(sm.img, true), q = q0 && q0.map(p => [p[0] / sm.k, p[1] / sm.k]);
     const geo = SDLive.geometry(img, q), sh = geo.ok ? SDLive.sharpness(img, q, SDCore.warp) : { ratio: 0, energy: 0 };
     // Ett kort som redan skannats måste lämna bilden (eller flyttas) innan nästa automatiska fångst.
-    if (needClear && (!geo.ok || (lastFire && dist2(q[0], lastFire[0]) / Math.hypot(img.width, img.height) > 0.08))) { needClear = false; tracker.reset(); }
+    lastDims = img.width;
+    // Ett skannat kort måste lämna bilden eller flyttas innan nästa fångst. I batch krävs två bilder i rad så att ett enstaka bortfall inte räknas som nytt kort.
+    if (needClear) { const away = !geo.ok || (lastFire && dist2(q[0], lastFire[0]) / Math.hypot(img.width, img.height) > 0.08); bGone = away ? bGone + 1 : 0; if (bGone >= (mode === 'batch' ? 2 : 1)) { needClear = false; bGone = 0; tracker.reset(); } }
     const r = needClear ? { fire: false, quad: null, stage: 'search' } : tracker.push({ geo, quad: q, sharp: sh, motion: mo }, img.width, img.height);
     lastSeen = geo.ok ? (r.quad || q).map(p => p.slice()) : null;
-    if (needClear) { overlay(img, null); liveMsg('Card scanned. Show the next one…'); }
+    if (needClear) { overlay(img, null); liveMsg(mode === 'batch' ? (batchMsg || 'Next card…') : 'Card scanned. Show the next one…'); }
     else if (!geo.ok) { overlay(img, q, 'bad'); liveMsg(geo.why); }
-    else if (r.fire) { overlay(img, r.quad, 'fire'); liveMsg('Got it!', true); lastFire = r.quad.map(p => p.slice()); capture(); }
+    else if (r.fire) { overlay(img, r.quad, 'fire'); liveMsg('Got it!', true); lastFire = r.quad.map(p => p.slice()); if (mode === 'batch') batchCapture(r.quad, img.width); else capture(); }
     else { overlay(img, r.quad, r.stage); liveMsg(r.why); }
-    if (!r.fire && !needClear && geo.ok && performance.now() - waitedSince > 9000) liveMsg('Taking a while? Press "Capture now".');
+    if (mode !== 'batch' && !r.fire && !needClear && geo.ok && performance.now() - waitedSince > 9000) liveMsg('Taking a while? Press "Capture now".');
     if (dbg) { const st = r.stats || {}; $('lvdbg').textContent = 'still ' + (isFinite(mo) ? mo.toFixed(2) : '-') + ' (<0.8) · spread ' + (st.spread != null ? (st.spread * 100).toFixed(1) + '%' : '-') + ' (<3%) · sharp ' + sh.ratio.toFixed(2) + ' (≥0.30) · energy ' + Math.round(sh.energy) + ' · geo ' + (geo.ok ? 'ok' : geo.why) + ' · ' + Math.round(performance.now() - t0) + ' ms/frame · video ' + lv.videoWidth + '×' + lv.videoHeight; }
     setTimeout(loop, Math.max(30, 120 - (performance.now() - t0)));
   }
@@ -366,11 +405,118 @@ const DBINFO = /*__DBINFO__*/;
     showLive(false); $('backlive').hidden = false; usePhoto(img, 'live');
   }
   $('h-live').addEventListener('click', () => { dbg = !dbg; $('lvdbg').hidden = !dbg; });
-  $('livebtn').addEventListener('click', startLive);
+  $('livebtn').addEventListener('click', () => startLive('live'));
+  $('batchbtn').addEventListener('click', () => startLive('batch'));
+  $('bpause').addEventListener('click', () => { paused = !paused; $('bpause').textContent = paused ? 'Resume' : 'Pause'; if (!paused) { tracker.reset(); liveMsg('Ready: feed the next card'); } });
   $('lvstop').addEventListener('click', stopLive);
-  $('lvnow').addEventListener('click', () => { lastFire = lastSeen; capture(); });
+  $('lvnow').addEventListener('click', () => { lastFire = lastSeen; if (mode === 'batch') { if (lastSeen && !liveBusy) batchCapture(lastSeen, lastDims); else liveMsg('No card in view'); } else capture(); });
   $('backlive').addEventListener('click', resumeLive);
   document.addEventListener('visibilitychange', () => { if (document.hidden && stream) { stopLive(); status('Live scan stopped because the page was hidden.'); } });
+
+
+  // ---- batch scan: mobilen fast över en matarlåda. Säkra kort läggs till själva, osäkra hamnar i "To check". ----
+  const batchStats = { added: 0, check: 0 }; let added = []; // added: stack för "Undo last"
+  let queue = [], qver = null;
+  try { const q = JSON.parse(localStorage.getItem('sd-queue') || 'null'); if (q && q.ver === DBMETA.version) queue = q.items; } catch (e) {}
+  const persistQueue = () => { try { localStorage.setItem('sd-queue', JSON.stringify({ ver: DBMETA.version, items: queue.map(({ thumb, top, a }) => ({ thumb, top, a })) })); } catch (e) {} };
+  let actx = null;
+  function audioInit() { try { actx = actx || new (window.AudioContext || window.webkitAudioContext)(); if (actx.state === 'suspended') actx.resume(); } catch (e) {} }
+  function beep(freqs) {
+    if (!$('bsound').checked || !actx) return;
+    try { let t = actx.currentTime; for (const f of freqs) { const o = actx.createOscillator(), g = actx.createGain(); o.frequency.value = f; o.connect(g); g.connect(actx.destination);
+      g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.25, t + 0.01); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.12); o.start(t); o.stop(t + 0.13); t += 0.14; } } catch (e) {}
+  }
+  let wl = null;
+  async function wakeLock(on) { try { if (on) { if (navigator.wakeLock && !wl) wl = await navigator.wakeLock.request('screen'); } else if (wl) { await wl.release(); wl = null; } } catch (e) { wl = null; } }
+  const flash = cls => { const el = $('live'); el.classList.add(cls); setTimeout(() => el.classList.remove(cls), 350); };
+  const defaultFinish = r => { const f = [...(r[4] || 'n')].map(c => FIN[c]); return f.includes('nonfoil') ? 'nonfoil' : f[0]; };
+  function renderBatchCount() { $('bcount').textContent = batchStats.added + ' added · ' + queue.length + ' to check' + (pending ? ' · identifying ' + pending : ''); }
+  const thumbOf = img => { const c = document.createElement('canvas'); c.width = img.width; c.height = img.height; c.getContext('2d').putImageData(img, 0, 0); return c.toDataURL('image/jpeg', 0.6); };
+  function addRow(i, finish, chk) {
+    const r = DB[i], ex = session.find(s => s.id === r[0] && s.finish === finish);
+    if (ex) { ex.qty = Math.min(99, ex.qty + 1); if (chk) ex.chk = true; } else session.push({ id: r[0], name: r[1], set: r[2], num: r[3], finish, qty: 1, chk: !!chk });
+    persist(); renderSession();
+  }
+  function confirmEvent(sc, a, top, rank_, auto) {
+    sc.state = 'confirmed';
+    emit('sd:confirm', { contract: CONTRACT, scan_id: sc.id, revision: sc.revision, source: sc.source, db: DBMETA, confidence: a.level, match: matchOf(a), candidate: toCand(top[rank_]), selected_rank: rank_, changed_by_user: rank_ !== 0, auto_confirmed: !!auto });
+  }
+  const showLast = (i, a, warped, label) => {
+    const r = DB[i]; $('blast').hidden = false; $('blastc').getContext('2d').putImageData(warped, 0, 0);
+    $('bl-name').textContent = r[1]; $('bl-meta').textContent = r[2].toUpperCase() + ' · #' + r[3];
+    const ch = $('bl-chip'); ch.className = 'chip ' + (a.printing === 'ambiguous' ? 'warn' : 'good'); ch.textContent = label; $('bundo').hidden = !added.length;
+  };
+  // Identifiering i bakgrundstråd (Web Worker). Om den inte kan startas körs samma kod i sidans tråd.
+  let worker = null, jobs = new Map(), jobSeq = 0, pending = 0;
+  const inlineIdentify = (big, start) => { const r = SDCore.identifyBatch(big, FLAT, start); return { quad: r.quad, dists: r.dists }; };
+  function initWorker() {
+    if (worker) return;
+    try {
+      worker = new Worker(URL.createObjectURL(new Blob([document.getElementById('wsrc').textContent], { type: 'text/javascript' })));
+      worker.onmessage = e => { const m = e.data; if (m.type !== 'done') return; const j = jobs.get(m.id); jobs.delete(m.id); if (j) m.error ? j.fallback() : j.resolve(m); };
+      worker.onerror = () => { worker = null; const js = [...jobs.values()]; jobs.clear(); js.forEach(j => j.fallback()); };
+      worker.postMessage({ type: 'init', db: DB });
+    } catch (e) { worker = null; }
+  }
+  function identifyAsync(big, start) {
+    return new Promise(resolve => {
+      const fallback = () => setTimeout(() => resolve(inlineIdentify(big, start)), 20);
+      if (!worker) { fallback(); return; }
+      const id = ++jobSeq; jobs.set(id, { resolve, fallback }); const buf = big.data.slice().buffer;
+      try { worker.postMessage({ type: 'id', id, w: big.width, h: big.height, buf, start }, [buf]); } catch (e) { jobs.delete(id); fallback(); }
+    });
+  }
+  // Fångst: ta en bild och lämna över till identifieringen direkt. Kameran fortsätter, så nästa kort hinner skannas medan det här identifieras.
+  function batchCapture(quadSmall, w) {
+    needClear = true; bGone = 0;
+    const big = frame(1600); if (!big) { needClear = false; return; }
+    const k = big.width / w, scaleQ = q => q.map(p => [p[0] * k, p[1] * k]), t0 = performance.now(), tol = dist2(quadSmall[0], quadSmall[2]) * 0.05;
+    pending++; batchMsg = 'Identifying…'; liveMsg(batchMsg); renderBatchCount();
+    const rate = r => { const top = rank(r.dists), a = assess(r.dists, top[0].i); return (a.level === 'confident' ? 2000 : a.level === 'check' ? 1000 : 0) - a.d0; };
+    // Reservbild 200 ms efter fångsten, medan kortet säkert ligger kvar. Används bara om första försöket inte blir säkert (nytt brus och ny skärpa).
+    let second = null;
+    setTimeout(() => { if (lastSeen && bGone === 0 && dist2(lastSeen[0], quadSmall[0]) <= tol) { const f = frame(1600); if (f) second = { big: f, start: scaleQ(lastSeen) }; } }, 200);
+    identifyAsync(big, scaleQ(quadSmall)).then(res => {
+      if (rate(res) >= 2000 || !second) return { big, res };
+      return identifyAsync(second.big, second.start).then(r2 => rate(r2) > rate(res) ? { big: second.big, res: r2 } : { big, res });
+    }).then(o => batchResult(o.big, o.res, t0)).catch(() => { batchMsg = 'Something went wrong with that card. Try it again.'; })
+      .finally(() => { pending = Math.max(0, pending - 1); renderBatchCount(); });
+  }
+  function batchResult(big, res, t0) {
+    const top = rank(res.dists), a = assess(res.dists, top[0].i);
+    const warped = SDCore.warp(big, res.quad, SDCore.MW, SDCore.MH), sc = { id: newId(), source: 'batch', state: 'candidates', revision: 1 };
+    emit('sd:candidates', { contract: CONTRACT, scan_id: sc.id, revision: 1, source: 'batch', db: DBMETA, confidence: a.level, match: matchOf(a), candidates: top.map(toCand) });
+    const r = DB[top[0].i];
+    if (a.level === 'confident') {
+      const finish = defaultFinish(r); confirmEvent(sc, a, top, 0, true); addRow(top[0].i, finish, a.printing === 'ambiguous'); added.push({ sc, id: r[0], finish }); batchStats.added++;
+      batchMsg = 'Added ' + r[1] + '. Feed the next card.'; showLast(top[0].i, a, warped, a.printing === 'ambiguous' ? 'Added · check printing' : 'Added'); beep([880]); flash('bflash-good');
+    } else {
+      queue.push({ thumb: thumbOf(warped), top: top.slice(0, 4), a: { level: a.level, d0: a.d0, gap: a.gap, printing: a.printing, printingGap: a.printingGap }, sc }); persistQueue(); batchStats.check++;
+      batchMsg = 'Not sure about this one: saved under "To check". Feed the next card.'; beep([330, 330]); flash('bflash-warn'); renderReview();
+    }
+    renderBatchCount(); status('Identified in ' + Math.round(performance.now() - t0) + ' ms.');
+  }
+  $('bundo').addEventListener('click', () => {
+    const u = added.pop(); if (!u) return; const k = session.findIndex(s => s.id === u.id && s.finish === u.finish);
+    if (k >= 0) { session[k].qty--; if (session[k].qty <= 0) session.splice(k, 1); }
+    batchStats.added = Math.max(0, batchStats.added - 1); persist(); renderSession(); renderBatchCount(); emit('sd:retract', { contract: CONTRACT, scan_id: u.sc.id });
+    $('bundo').hidden = !added.length; $('blast').hidden = !added.length; batchMsg = 'Removed the last card.'; liveMsg(batchMsg);
+  });
+  // "To check": användaren väljer rätt kort (eller hoppar över) i efterhand. Efter omladdning saknas scan-objektet och skapas då vid beslutet.
+  function ensureScan(it) {
+    if (it.sc) return it.sc; const sc = it.sc = { id: newId(), source: 'batch', state: 'candidates', revision: 1 };
+    emit('sd:candidates', { contract: CONTRACT, scan_id: sc.id, revision: 1, source: 'batch', db: DBMETA, confidence: it.a.level, match: matchOf({ d0: it.a.d0, gap: it.a.gap, printing: it.a.printing, printingGap: it.a.printingGap }), candidates: it.top.map(toCand) }); return sc;
+  }
+  function renderReview() {
+    const ul = $('rvlist'); ul.textContent = ''; $('review').hidden = !queue.length; $('rv-count').textContent = queue.length ? queue.length + ' left' : '';
+    queue.forEach(it => { const li = document.createElement('li'), im = document.createElement('img'), op = document.createElement('div'); im.src = it.thumb; im.alt = 'Scanned card'; op.className = 'opts';
+      it.top.slice(0, 3).forEach((t, k) => { const r = DB[t.i], b = document.createElement('button'), n = document.createElement('span'), m = document.createElement('span'); n.textContent = r[1]; m.className = 'meta'; m.textContent = r[2].toUpperCase() + ' #' + r[3];
+        b.append(n, m); b.addEventListener('click', () => { const sc = ensureScan(it); confirmEvent(sc, it.a, it.top, k, false); addRow(t.i, defaultFinish(r)); drop(it); status('Added ' + r[1] + '.'); }); op.append(b); });
+      const sk = document.createElement('button'); sk.textContent = 'Skip this card'; sk.addEventListener('click', () => { const sc = ensureScan(it); sc.state = 'cancelled'; emit('sd:cancel', { contract: CONTRACT, scan_id: sc.id, reason: 'skipped' }); drop(it); }); op.append(sk);
+      li.append(im, op); ul.append(li); });
+  }
+  function drop(it) { queue = queue.filter(x => x !== it); persistQueue(); renderReview(); renderBatchCount(); }
+  renderReview();
 
   // ---- corner editor ----
   const view = $('view'), stage = $('stage'); const handles = [];
@@ -411,6 +557,7 @@ const DBINFO = /*__DBINFO__*/;
       const nm = document.createElement('div'); nm.textContent = s.name; nm.style.fontWeight = '600'; nm.style.overflowWrap = 'anywhere';
       const mt = document.createElement('div'); mt.className = 'meta'; mt.textContent = s.set.toUpperCase() + ' #' + s.num + ' · ';
       const fn = document.createElement('span'); fn.textContent = s.finish; if (s.finish !== 'nonfoil') fn.className = 'foil'; mt.append(fn);
+      if (s.chk) { const w = document.createElement('span'); w.textContent = ' · check printing'; w.style.color = 'var(--warn)'; mt.append(w); }
       a.append(nm, mt);
       const q = document.createElement('span'); q.className = 'q'; q.textContent = '×' + s.qty;
       const rm = document.createElement('button'); rm.textContent = 'Remove'; rm.setAttribute('aria-label', 'Remove ' + s.name);
