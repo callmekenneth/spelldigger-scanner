@@ -19,8 +19,12 @@ const ok = (cond, msg) => { console.log((cond ? 'OK   ' : 'FEL  ') + msg); if (!
   const waitFor = (fn, arg, ms = 90000) => p.waitForFunction(fn, arg, { timeout: ms });
   const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
+  // 0. Dolda paneler ska verkligen vara osynliga (hidden-attributet får inte slås ut av CSS)
+  ok(!(await p.isVisible('#live')) && !(await p.isVisible('#adjust')) && !(await p.isVisible('#result')), 'start: live-, hörn- och resultatpanelerna är osynliga');
+
   // 1. Live-fångst ger candidates med kontrakt 2
   await p.click('#livebtn'); await waitFor(() => window.__ev.some(e => e[0] === 'sd:candidates'));
+  ok(!(await p.isVisible('#live')) && await p.isVisible('#adjust'), 'efter fångst: livevyn är dold och hörnvyn syns (aldrig båda samtidigt)');
   let c = (await evs('sd:candidates'))[0];
   ok(c.contract === 2 && UUID.test(c.scan_id) && c.revision === 1 && c.source === 'live', 'candidates: contract 2, scan_id (uuid), revision 1, source live');
   ok(c.db.version === manifest.version && c.db.count === manifest.count && c.db.hash_algorithm === 'sdh1' && c.db.format === 2, 'candidates: db-version matchar data/manifest.json (' + c.db.version + ')');
