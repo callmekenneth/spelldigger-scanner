@@ -1,6 +1,6 @@
 # Status
 
-**Fungerar:** foto- och live-läge, hörnförfining, lista, CSV-export, kopiera/spara.
+**Fungerar:** foto- och live-läge, hörnförfining, lista, CSV-export, kopiera/spara, händelsekontrakt 2 (`scan_id`, Oracle-baserad säkerhet, tryckningsflagga, dataversion) med webbläsartest.
 **Mätt:** 7/7 på egna foton av kort som finns i databasen (10 foton totalt).
 
 ## Nästa steg

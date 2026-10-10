@@ -159,6 +159,7 @@ footer { font-size: 12px; color: var(--muted); display: grid; gap: 4px }
 /*__LIVE__*/
 const DB = /*__DB__*/;
 const SETS = /*__SETS__*/;
+const DBINFO = /*__DBINFO__*/;
 (() => {
   const $ = id => document.getElementById(id);
   const FIN = { n: 'nonfoil', f: 'foil', e: 'etched' };
@@ -190,57 +191,87 @@ const SETS = /*__SETS__*/;
     const c = document.createElement('canvas'); c.width = Math.round(bm.width * k); c.height = Math.round(bm.height * k);
     const ctx = c.getContext('2d', { willReadFrequently: true }); ctx.drawImage(bm, 0, 0, c.width, c.height);
     photo = ctx.getImageData(0, 0, c.width, c.height);
-    usePhoto(photo);
+    usePhoto(photo, 'photo');
   }
-  function usePhoto(img) {
-    photo = img; quad = SDCore.framePrior(photo, 0.9); autoQuad = quad.map(p => p.slice());
+  function usePhoto(img, source) {
+    beginScan(source); photo = img; quad = SDCore.framePrior(photo, 0.9); autoQuad = quad.map(p => p.slice());
     $('adjust').hidden = false; $('result').hidden = true; drawStage(); status('Finding the card… (a few seconds)');
     setTimeout(autoIdentify, 40);
   }
   $('cam').addEventListener('change', e => { load(e.target.files[0]); e.target.value = ''; });
   $('pick').addEventListener('change', e => { load(e.target.files[0]); e.target.value = ''; });
 
-  // ---- identify ----
+  // ---- skanning (scan) och gränssnitt mot Spelldigger: kontrakt 2, se docs/integration.md ----
+  const CONTRACT = 2, PRINTING_GAP = 15;
+  const DBMETA = { version: DBINFO.version, format: DBINFO.format, hash_algorithm: DBINFO.hash_algorithm, count: DBINFO.count };
+  const newId = () => { try { if (crypto.randomUUID) return crypto.randomUUID(); } catch (e) {} return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => { const r = Math.random() * 16 | 0; return (c === 'x' ? r : (r & 3 | 8)).toString(16); }); };
+  const emit = (type, detail) => { try { window.dispatchEvent(new CustomEvent(type, { detail })); } catch (e) {} };
+  // En skanning = ett fotograferat/fångat kort från identifiering till bekräftelse eller avbrott.
+  // state: identifying -> candidates -> confirmed | cancelled. Bekräftade skanningar rörs aldrig igen.
+  let scan = null;
+  const open = sc => !!sc && (sc.state === 'identifying' || sc.state === 'candidates');
+  function endScan(reason) {
+    if (!open(scan)) return;
+    const sc = scan; sc.state = 'cancelled';
+    if (current && current.scan === sc) { current = null; $('result').hidden = true; $('adjust').hidden = true; }
+    emit('sd:cancel', { contract: CONTRACT, scan_id: sc.id, reason });
+  }
+  function beginScan(source) { endScan('new_scan'); scan = { id: newId(), source, state: 'identifying', revision: 0 }; return scan; }
+  window.SpelldiggerScanner = { contract: CONTRACT };
+
   const rank = dists => Array.from(dists.keys()).sort((a, b) => dists[a] - dists[b]).slice(0, 6).map(i => ({ i, d: dists[i] }));
+  const toCand = t => { const r = DB[t.i]; return { scryfall_id: r[0], oracle_id: r[6], name: r[1], set: r[2], collector_number: r[3], finishes: [...(r[4] || 'n')].map(f => FIN[f]), distance: t.d }; };
+  function confidence(d, gap) {
+    if (gap === null) return d <= 70 ? ['warn', 'Check it'] : ['bad', 'Unsure: maybe not in the database']; // ingen jämförelse: aldrig "Confident"
+    if (d <= 50 && gap >= 30) return ['good', 'Confident'];
+    if (d <= 70 && gap >= 20) return ['warn', 'Check it'];
+    return ['bad', 'Unsure: maybe not in the database'];
+  }
+  // Algoritmens bedömning av skanningen. "Samma kort" = samma Oracle-ID. Ändras aldrig av användarens val.
+  function assess(dists, best) {
+    const d0 = dists[best], oracle = DB[best][6]; let other = Infinity, otherPrint = Infinity;
+    for (let i = 0; i < DB.length; i++) { if (i === best) continue; const d = dists[i];
+      if (DB[i][6] !== oracle) { if (d < other) other = d; } else if (d < otherPrint) otherPrint = d; }
+    const gap = other === Infinity ? null : other - d0, printingGap = otherPrint === Infinity ? null : otherPrint - d0;
+    const printing = printingGap !== null && printingGap < PRINTING_GAP ? 'ambiguous' : 'distinct';
+    const [cls, label] = confidence(d0, gap);
+    return { d0, gap, printing, printingGap, cls, label, level: { good: 'confident', warn: 'check', bad: 'unsure' }[cls] };
+  }
+  const matchOf = a => ({ distance: a.d0, gap: a.gap, gap_basis: 'oracle_id', printing: a.printing, printing_gap: a.printingGap });
+  // Visar resultatet och skickar sd:candidates. Resultat för en skanning som hunnit avbrytas eller bekräftas kastas.
+  function showResult(my, dists, warped, msg) {
+    if (scan !== my || !open(my)) return;
+    const top = rank(dists), a = assess(dists, top[0].i);
+    my.state = 'candidates'; my.revision++;
+    current = { scan: my, top, warped, a }; choice = 0; qty = 1; status(msg); renderResult();
+    emit('sd:candidates', { contract: CONTRACT, scan_id: my.id, revision: my.revision, source: my.source, db: DBMETA, confidence: a.level, match: matchOf(a), candidates: top.map(toCand) });
+  }
+
+  // ---- identify ----
   function autoIdentify() {
-    if (!photo) return;
-    status('Finding the card… (a few seconds)');
+    if (!photo || !open(scan)) return;
+    const my = scan; status('Finding the card… (a few seconds)');
     setTimeout(() => {
+      if (scan !== my || !open(my)) return;
       const t0 = performance.now(), det = SDCore.detect(photo);
       const starts = [det, SDCore.detect(photo, true), SDCore.framePrior(photo, 0.95), SDCore.framePrior(photo, 0.85), SDCore.framePrior(photo, 0.75)].filter(Boolean);
       const r = SDCore.identify(photo, FLAT, starts);
+      if (scan !== my || !open(my)) return;
       quad = r.quad.map(p => p.slice()); autoQuad = quad.map(p => p.slice()); drawStage();
-      showResult(rank(r.dists), SDCore.warp(photo, quad, OW, OH), 'Searched ' + DB.length.toLocaleString('en') + ' printings in ' + ((performance.now() - t0) / 1000).toFixed(1) + ' s. Drag a corner if the outline is off.');
+      showResult(my, r.dists, SDCore.warp(photo, quad, OW, OH), 'Searched ' + DB.length.toLocaleString('en') + ' printings in ' + ((performance.now() - t0) / 1000).toFixed(1) + ' s. Drag a corner if the outline is off.');
     }, 30);
   }
-  // Manual: score exactly the corners the user placed (both 0 and 180 degrees).
+  // Manual: score exactly the corners the user placed (both 0 and 180 degrees). Ger en ny revision av samma skanning.
   function identify() {
-    if (!photo || !quad) return;
-    status('Matching…');
+    if (!photo || !quad || !open(scan)) return;
+    const my = scan; status('Matching…');
     const t0 = performance.now();
     const cands = SDCore.orientations(quad).map(q => ({ q, bits: SDH.hash(SDCore.warp(photo, q, SDCore.MW, SDCore.MH)) }));
     const dists = new Uint16Array(DB.length).fill(65535);
     cands.forEach(c => { const hb = toBits(c.bits); for (let i = 0; i < DB.length; i++) { const s = hd(HB[i], hb); if (s < dists[i]) dists[i] = s; } });
-    const top = rank(dists);
-    const first = cands.map(c => hd(HB[top[0].i], toBits(c.bits)));
-    showResult(top, SDCore.warp(photo, cands[first[0] <= first[1] ? 0 : 1].q, OW, OH), 'Matched in ' + Math.round(performance.now() - t0) + ' ms.');
-  }
-  // ---- gränssnitt mot Spelldigger: skannern identifierar, Spelldigger sparar (se docs/integration.md) ----
-  const toCand = t => { const r = DB[t.i]; return { scryfall_id: r[0], name: r[1], set: r[2], collector_number: r[3], finishes: [...(r[4] || 'n')].map(f => FIN[f]), distance: t.d }; };
-  const emit = (type, detail) => { try { window.dispatchEvent(new CustomEvent(type, { detail })); } catch (e) {} };
-  function assess(top) {
-    const other = top.find(t => DB[t.i][1] !== DB[top[0].i][1]), gap = other ? other.d - top[0].d : 99, c = confidence(top[0].d, gap);
-    return { gap, cls: c[0], label: c[1], level: { good: 'confident', warn: 'check', bad: 'unsure' }[c[0]] };
-  }
-  window.SpelldiggerScanner = { contract: 1 };
-  function showResult(top, warped, msg) {
-    current = { top, warped }; choice = 0; qty = 1; status(msg); renderResult();
-    const a = assess(top); emit('sd:candidates', { contract: 1, confidence: a.level, distance: top[0].d, gap: a.gap, candidates: top.map(toCand) });
-  }
-  function confidence(d, gap) {
-    if (d <= 50 && gap >= 30) return ['good', 'Confident'];
-    if (d <= 70 && gap >= 20) return ['warn', 'Check it'];
-    return ['bad', 'Unsure: maybe not in the database'];
+    let best = 0; for (let i = 1; i < DB.length; i++) if (dists[i] < dists[best]) best = i;
+    const first = cands.map(c => hd(HB[best], toBits(c.bits)));
+    showResult(my, dists, SDCore.warp(photo, cands[first[0] <= first[1] ? 0 : 1].q, OW, OH), 'Matched in ' + Math.round(performance.now() - t0) + ' ms.');
   }
   function renderResult() {
     const { top, warped } = current; $('result').hidden = false;
@@ -248,11 +279,8 @@ const SETS = /*__SETS__*/;
     const pick = top[choice], r = DB[pick.i];
     $('m-name').textContent = r[1];
     $('m-meta').textContent = r[2].toUpperCase() + ' · #' + r[3];
-    const otherName = top.find(t => DB[t.i][1] !== DB[top[0].i][1]);
-    const gap = otherName ? otherName.d - top[0].d : 99;
-    const [cls, txt] = confidence(top[0].d, gap);
-    const chip = $('m-chip'); chip.className = 'chip ' + cls; chip.textContent = txt;
-    $('m-dist').textContent = 'Distance ' + pick.d + ' of 256 bits' + (otherName ? ' · nearest other card ' + otherName.d : '') + '.';
+    const a = current.a, chip = $('m-chip'); chip.className = 'chip ' + a.cls; chip.textContent = a.label;
+    $('m-dist').textContent = 'Distance ' + pick.d + ' of 256 bits' + (a.gap !== null ? ' · nearest other card ' + (a.d0 + a.gap) : '') + (a.printing === 'ambiguous' ? '. Similar printings exist: check set and number.' : '.');
     const ul = $('alts'); ul.textContent = '';
     top.forEach((t, k) => { const rr = DB[t.i], li = document.createElement('li'), b = document.createElement('button');
       b.setAttribute('aria-pressed', String(k === choice));
@@ -267,8 +295,9 @@ const SETS = /*__SETS__*/;
   $('qminus').addEventListener('click', () => { qty = Math.max(1, qty - 1); $('qty').textContent = qty; });
   $('qplus').addEventListener('click', () => { qty = Math.min(99, qty + 1); $('qty').textContent = qty; });
   $('add').addEventListener('click', () => {
-    if (!current) return; const r = DB[current.top[choice].i], finish = $('finish').value;
-    emit('sd:confirm', { contract: 1, confidence: assess(current.top).level, candidate: toCand(current.top[choice]) });
+    if (!current || scan !== current.scan || scan.state !== 'candidates') return; // bara en bekräftelse per skanning
+    const sc = scan, r = DB[current.top[choice].i], finish = $('finish').value; sc.state = 'confirmed';
+    emit('sd:confirm', { contract: CONTRACT, scan_id: sc.id, revision: sc.revision, source: sc.source, db: DBMETA, confidence: current.a.level, match: matchOf(current.a), candidate: toCand(current.top[choice]), selected_rank: choice, changed_by_user: choice !== 0 });
     const ex = session.find(s => s.id === r[0] && s.finish === finish);
     if (ex) ex.qty = Math.min(99, ex.qty + qty); else session.push({ id: r[0], name: r[1], set: r[2], num: r[3], finish, qty });
     persist(); renderSession(); status('Added ' + qty + ' × ' + r[1] + '. Photograph the next card.');
@@ -277,7 +306,7 @@ const SETS = /*__SETS__*/;
 
   // ---- live scan: camera preview, auto-capture when the whole card is in view, still and sharp ----
   const lv = $('lv'), lvo = $('lvo'), grab = document.createElement('canvas'), gctx = grab.getContext('2d', { willReadFrequently: true });
-  let stream = null, liveOn = false, liveBusy = false, needClear = false, lastFire = null, waitedSince = 0;
+  let stream = null, liveOn = false, liveBusy = false, needClear = false, lastFire = null, lastSeen = null, waitedSince = 0;
   const tracker = SDLive.makeTracker({ frames: 4, moveTol: 0.015, sharpFloor: 700 });
   const liveMsg = (t, ok) => { const m = $('lvmsg'); m.textContent = t; m.className = 'livemsg' + (ok ? ' ok' : ''); };
   const dist2 = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
@@ -293,8 +322,8 @@ const SETS = /*__SETS__*/;
     liveOn = true; liveBusy = false; needClear = false; lastFire = null; waitedSince = performance.now(); tracker.reset(); liveMsg('Show a card to the camera…'); loop();
   }
   function showLive(on) { $('live').hidden = !on; }
-  function stopLive() { liveOn = false; if (stream) stream.getTracks().forEach(t => t.stop()); stream = null; lv.srcObject = null; showLive(false); $('backlive').hidden = true; }
-  function resumeLive() { if (!stream) return; $('result').hidden = true; $('adjust').hidden = true; current = null; showLive(true); tracker.reset(); waitedSince = performance.now(); liveBusy = false; liveMsg('Show the next card…'); }
+  function stopLive() { endScan('stopped'); liveOn = false; if (stream) stream.getTracks().forEach(t => t.stop()); stream = null; lv.srcObject = null; showLive(false); $('backlive').hidden = true; }
+  function resumeLive() { if (!stream) return; endScan('resumed'); $('result').hidden = true; $('adjust').hidden = true; current = null; showLive(true); tracker.reset(); waitedSince = performance.now(); liveBusy = false; liveMsg('Show the next card…'); }
   function frame(maxSide) {
     const vw = lv.videoWidth, vh = lv.videoHeight; if (!vw || !vh) return null;
     const k = Math.min(1, maxSide / Math.max(vw, vh)); grab.width = Math.round(vw * k); grab.height = Math.round(vh * k);
@@ -312,7 +341,9 @@ const SETS = /*__SETS__*/;
     const t0 = performance.now(), img = frame(320);
     if (!img) { setTimeout(loop, 200); return; }
     const q = SDCore.detect(img, true), res = SDLive.analyse(img, q);
-    if (needClear) { if (!res.ok || !lastFire || dist2(q[0], lastFire[0]) / Math.hypot(img.width, img.height) > 0.08) needClear = false; }
+    // Ett kort som redan skannats måste lämna bilden (eller flyttas) innan nästa automatiska fångst.
+    if (needClear && (!res.ok || (lastFire && dist2(q[0], lastFire[0]) / Math.hypot(img.width, img.height) > 0.08))) needClear = false;
+    lastSeen = res.ok ? q.map(p => p.slice()) : null;
     const t = needClear ? { fire: false, progress: 0 } : tracker.push(res, img.width, img.height);
     if (needClear) { overlay(img, null); liveMsg('Card scanned. Show the next one…'); }
     else if (!res.ok) { overlay(img, q, 'bad'); liveMsg(res.why); }
@@ -325,11 +356,11 @@ const SETS = /*__SETS__*/;
     if (liveBusy) return; liveBusy = true; needClear = true;
     try { navigator.vibrate && navigator.vibrate(60); } catch (e) {}
     const img = frame(1600); if (!img) { liveBusy = false; return; }
-    showLive(false); $('backlive').hidden = false; usePhoto(img);
+    showLive(false); $('backlive').hidden = false; usePhoto(img, 'live');
   }
   $('livebtn').addEventListener('click', startLive);
   $('lvstop').addEventListener('click', stopLive);
-  $('lvnow').addEventListener('click', () => { lastFire = null; capture(); });
+  $('lvnow').addEventListener('click', () => { lastFire = lastSeen; capture(); });
   $('backlive').addEventListener('click', resumeLive);
   document.addEventListener('visibilitychange', () => { if (document.hidden && stream) { stopLive(); status('Live scan stopped because the page was hidden.'); } });
 

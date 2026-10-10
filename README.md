@@ -13,13 +13,14 @@ Provkör: <https://callmekenneth.github.io/spelldigger-scanner/> (efter att GitH
 Allt körs i webbläsaren. Inga anrop till betald AI, ingen server, ingen kostnad per användare.
 
 ## Gränssnitt mot Spelldigger
-Skannern identifierar, Spelldigger sparar: skannern skickar händelserna `sd:candidates` och `sd:confirm` med exakt Scryfall-version (`scryfall_id`) eller kandidater. Se [docs/integration.md](docs/integration.md).
+Skannern identifierar, Spelldigger sparar. Händelserna `sd:candidates`, `sd:confirm` och `sd:cancel` bär `scan_id`, Scryfall-version (`scryfall_id`, `oracle_id`), säkerhetsnivå och dataversion. Kontraktet (kontrakt 2) och livscykeln finns i [docs/integration.md](docs/integration.md); databasformat och hashalgoritm i [docs/data-format.md](docs/data-format.md).
 
 ## Kommandon
 ```
 npm install
 npm run build      # skapar dist/index.html (en enda fil)
-npm run check      # syntaxkontroll av sidans script
+npm run check      # syntaxkontroll av sidans script och kontroll av manifestet
+npm run manifest   # skriver om data/manifest.json efter ändrad data/db.json
 npm run bench      # kör igenkänningen på foton i bench/ (se Test)
 npm run build-db   # bygger om data/db.json från Scryfall (se Databasen)
 ```
@@ -29,11 +30,13 @@ npm run build-db   # bygger om data/db.json från Scryfall (se Databasen)
 `.github/workflows/pages.yml` bygger och publicerar vid varje push till `main`. Slå på en gång: **Settings → Pages → Source: GitHub Actions**. Gratis Pages kräver publikt repo.
 
 ## Databasen
-`data/db.json`: en rad per tryckning, `[scryfall_id, namn, set, samlarnummer, finish-bokstäver (n/f/e), hash64hex]`. Seten listas i `data/sets.json`.
+`data/db.json`: en rad per tryckning, `[scryfall_id, namn, set, samlarnummer, finish-bokstäver (n/f/e), hash64hex, oracle_id]`, med `data/manifest.json` som beskriver format, antal och innehållsbaserad version. Seten listas i `data/sets.json`. Detaljer i [docs/data-format.md](docs/data-format.md).
 - `src/hash.js` används både när databasen byggs och på telefonen. **Ändra den inte utan att bygga om databasen.**
 - `tools/build-db.mjs` hämtar från Scryfall (följer deras regler: User-Agent, paus mellan anrop, bilder från `*.scryfall.io`). Skriptet är skrivet men ännu inte körd mot Scryfall; nuvarande `db.json` byggdes i webbläsare från samma bilder och hash-kod. Kör det i en GitHub Action (Scryfall är nåbart där) eller lokalt och jämför några rader mot nuvarande fil.
 
 ## Test
+`test/e2e-contract.cjs` provar händelsekontraktet och livscykeln i Chromium med falsk kamera (se filens huvud).
+
 `npm run bench` läser `bench/labels.json` (`{"bild.jpg": "Kortnamn" | null}`, `null` = finns inte i databasen) och JPG-filer i `bench/`. Mappen ingår inte i repot (privata foton). Resultat på 10 egna foton: 7/7 av korten som finns i databasen identifierades rätt, de 3 som saknades fick "Unsure". Det är ett litet underlag, samma bakgrund och belysning; fler foton behövs.
 
 ## Kända begränsningar

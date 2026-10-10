@@ -22,7 +22,7 @@ for (const code of sets) {
     for (const c of j.data || []) {
       const img = c.image_uris?.small || c.card_faces?.[0]?.image_uris?.small;
       if (!img) { console.warn('ingen bild:', c.id); continue; }
-      rows.push({ id: c.id, n: c.name, s: c.set, c: c.collector_number, f: (c.finishes || []).map(x => x[0]).join(''), img });
+      rows.push({ id: c.id, o: c.oracle_id || c.card_faces?.[0]?.oracle_id, n: c.name, s: c.set, c: c.collector_number, f: (c.finishes || []).map(x => x[0]).join(''), img });
     }
     url = j.has_more ? j.next_page : null; await sleep(120);
   }
@@ -34,8 +34,10 @@ await Promise.all(Array.from({ length: 6 }, async () => {
     const i = next++, r = rows[i];
     const buf = Buffer.from(await (await fetch(r.img)).arrayBuffer());
     const { data, info } = await sharp(buf).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
-    out[i] = [r.id, r.n, r.s, r.c, r.f, SDH.hash({ width: info.width, height: info.height, data })];
+    out[i] = [r.id, r.n, r.s, r.c, r.f, SDH.hash({ width: info.width, height: info.height, data }), r.o];
   }
 }));
 fs.writeFileSync(path.join(root, 'data/db.json'), JSON.stringify(out));
+const { execFileSync } = await import('node:child_process');
+execFileSync(process.execPath, [path.join(root, 'scripts/manifest.mjs')], { stdio: 'inherit' });
 console.log('data/db.json skriven:', out.length, 'tryckningar');

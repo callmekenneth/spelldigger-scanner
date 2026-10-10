@@ -1,0 +1,30 @@
+{
+  "format": 2,
+  "hash_algorithm": "sdh1",
+  "hash_bits": 256,
+  "hash_encoding": "hex, 64 tecken, se docs/data-format.md",
+  "row_fields": [
+    "scryfall_id",
+    "name",
+    "set",
+    "collector_number",
+    "finishes",
+    "hash",
+    "oracle_id"
+  ],
+  "finishes_encoding": "bokstäver: n = nonfoil, f = foil, e = etched",
+  "source": "Scryfall API, bild \"small\" (JPG) per tryckning",
+  "count": 2725,
+  "oracle_cards": 1751,
+  "sets": [
+    "fra",
+    "hob",
+    "msh",
+    "sos",
+    "tmt",
+    "ecl",
+    "tla"
+  ],
+  "sha256": "56f4fc0a2fae7aa9a4f9971f8eac207631b2073bd051b678b2ffd4f77df23119",
+  "version": "sdh1-56f4fc0a2fae"
+}
